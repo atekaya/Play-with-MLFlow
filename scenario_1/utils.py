@@ -1,11 +1,7 @@
 import datetime 
 
-from sklearn.metrics import log_loss
-
 from hyperopt import hp, fmin, tpe, Trials, STATUS_OK, STATUS_FAIL
-
 import lightgbm as lgb
-
 import mlflow
 
 
@@ -35,11 +31,10 @@ class HPOpt(object):
         :return:
         """
         try:
-            
-                result = fmin(fn=self.lgb_clf, space=space, algo=algo, max_evals=max_evals, trials=trials)
+            result = fmin(fn=self.lgb_clf, space=space, algo=algo, max_evals=max_evals, trials=trials)
         except Exception as e:
-            return {'status': STATUS_FAIL,
-                    'exception': str(e)}
+            return {'status': STATUS_FAIL, 'exception': str(e)}
+
         return result, trials
 
     def lgb_clf(self, para):
@@ -53,11 +48,11 @@ class HPOpt(object):
             # Log parameters to MLFlow
             for k, v in para['params_space'].items():
                 mlflow.log_param(k, v)
-            train_res = self.train_clf(clf, para)
+            train_res = self.__train_clf(clf, para)
 
         return train_res
 
-    def train_clf(self, clf, para):
+    def __train_clf(self, clf, para):
         """
         Train and evaluate the model
         :param clf: classifier
@@ -66,16 +61,27 @@ class HPOpt(object):
         """
         clf.fit(self.x_train, self.y_train,
                 eval_set=[(self.x_train, self.y_train), (self.x_test, self.y_test)],
+                callbacks=[self.__logging_loss],
                 **para['fit_params'])
 
-        pred_proba = clf.predict_proba(self.x_test)
-        loss = log_loss(self.y_test, pred_proba)
+        # Log Score
+        train_score = para['scoring_func'](self.y_train, clf.predict(self.x_train))
+        mlflow.log_metric('train_score', train_score)
+        test_score = para['scoring_func'](self.y_test, clf.predict(self.x_test))
+        mlflow.log_metric('val_score', test_score)
 
-        pred_class = clf.predict(self.x_test)
-        score = para['scoring_func'](self.y_test, pred_class)
-
-        # Log metrics: loss and score
-        mlflow.log_metric('val_loss', loss)
-        mlflow.log_metric('val_score', score)
-
+        loss = clf.best_score_['valid_1']['multi_logloss']
         return {'loss': loss, 'status': STATUS_OK}
+
+    def __logging_loss(self, lgb_env):
+        """
+        Call back fonction to log loss to MLFlow
+        :param lgb: LightGBMClassifier
+        :return: None
+        """
+        mlflow.log_metrics(
+            metrics={
+                'train_loss': lgb_env.evaluation_result_list[0][2],
+                'val_loss': lgb_env.evaluation_result_list[1][2]
+            }, step=lgb_env.iteration
+        )
